@@ -1,247 +1,400 @@
-// api/webhook.js — Production-ready Serverless Webhook Handler for Alex the Telegram AI Agent
-// Deployed on Vercel with Supabase + DeepSeek
+// api/webhook.js
+// Production-ready Serverless Webhook Handler for Telegram AI Agent "Alex"
+// Deployed on Vercel | Connected to Supabase | Powered by DeepSeek
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const SUPABASE_URL = process.env.SUPABASE_URL ? process.env.SUPABASE_URL.replace(/\/+$/, '') : ''; // strip trailing slash safely
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+const CREATOR_CHAT_ID = 1123787650;
+const CREATOR_USERNAME = "nadim4786";
 
-// ---------- Helper: fetch with timeout ----------
-const fetchWithTimeout = async (url, options = {}, timeout = 15000) => {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(id);
-    return response;
-  } catch (err) {
-    clearTimeout(id);
-    throw err;
+// ─── HELPERS ───────────────────────────────────────────────────────────────────
+
+function getSupabaseBase() {
+  return (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
+}
+
+async function supabaseFetch(path, options = {}) {
+  const base = getSupabaseBase();
+  const url = `${base}/rest/v1${path}`;
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      apikey: process.env.SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_ANON_KEY}`,
+      Prefer: options.prefer || "return=representation",
+      ...(options.headers || {}),
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Supabase error [${res.status}]: ${text}`);
   }
-};
+  const ct = res.headers.get("content-type") || "";
+  return ct.includes("application/json") ? res.json() : res.text();
+}
 
-// ---------- Supabase REST helpers ----------
-const supabaseFetch = async (table, options = {}) => {
-  const { method = 'GET', body, params = '' } = options;
-  const url = `${SUPABASE_URL}/rest/v1/${table}${params}`;
-  const headers = {
-    'apikey': SUPABASE_ANON_KEY,
-    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-    'Content-Type': 'application/json',
-    'Prefer': 'return=representation'
-  };
-  const res = await fetchWithTimeout(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  if (!res.ok) throw new Error(`Supabase ${table} error: ${res.status} ${await res.text()}`);
-  return res.json();
-};
+async function sendTelegramMessage(chatId, text) {
+  const url = `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      parse_mode: "Markdown",
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    console.log(`[Telegram sendMessage error] ${err}`);
+  }
+}
 
-// ---------- Fetch config from alex_config ----------
-const getConfig = async () => {
+// ─── BINANCE LIVE PRICES ───────────────────────────────────────────────────────
+
+async function fetchBinancePrice(symbol) {
   try {
-    const rows = await supabaseFetch('alex_config');
+    const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return parseFloat(data.price);
+  } catch (e) {
+    console.log(`[Binance fetch error for ${symbol}]: ${e.message}`);
+    return null;
+  }
+}
+
+async function getLivePrices() {
+  const [btc, eth, sol] = await Promise.all([
+    fetchBinancePrice("BTC"),
+    fetchBinancePrice("ETH"),
+    fetchBinancePrice("SOL"),
+  ]);
+  return { BTC: btc, ETH: eth, SOL: sol };
+}
+
+// ─── SUPABASE: CONFIG ──────────────────────────────────────────────────────────
+
+async function fetchAlexConfig() {
+  try {
+    const rows = await supabaseFetch(
+      `/alex_config?select=key,value&key=in.(system_prompt,watchlist_coins,min_risk_reward,min_win_probability)`
+    );
     const config = {};
-    for (const row of rows) {
-      config[row.key] = row.value;
+    if (Array.isArray(rows)) {
+      rows.forEach((r) => {
+        config[r.key] = r.value;
+      });
     }
     return config;
   } catch (e) {
-    console.log("Config fetch error:", e.message);
+    console.log(`[fetchAlexConfig error]: ${e.message}`);
     return {};
   }
-};
+}
 
-// ---------- Chat memory management ----------
-const CHAT_HISTORY_LIMIT = 20;
-
-const getChatHistory = async (chatId) => {
+async function updateSystemPrompt(newPrompt) {
   try {
-    const rows = await supabaseFetch('alex_memory', {
-      params: `?chat_id=eq.${chatId}&order=created_at.asc&limit=${CHAT_HISTORY_LIMIT}`
+    await supabaseFetch(`/alex_config?key=eq.system_prompt`, {
+      method: "PATCH",
+      prefer: "return=minimal",
+      body: JSON.stringify({ value: newPrompt }),
     });
-    return rows.map(r => ({ role: r.role, content: r.content }));
+    console.log("[updateSystemPrompt] system_prompt updated in alex_config");
   } catch (e) {
-    console.log("History log pull failed:", e.message);
-    return [];
+    console.log(`[updateSystemPrompt error]: ${e.message}`);
   }
-};
+}
 
-const saveChatMessage = async (chatId, role, content) => {
+// ─── SUPABASE: MEMORY ──────────────────────────────────────────────────────────
+
+async function getChatHistory(chatId) {
   try {
-    await supabaseFetch('alex_memory', {
-      method: 'POST',
-      body: { chat_id: String(chatId), role, content }
+    // Get rolling last 20 messages + any permanent memories for this chat
+    const [rolling, permanent] = await Promise.all([
+      supabaseFetch(
+        `/alex_memory?chat_id=eq.${chatId}&role=in.(user,assistant)&order=id.desc&limit=20&select=role,content`
+      ),
+      supabaseFetch(
+        `/alex_memory?chat_id=eq.${chatId}&role=eq.user_permanent&select=role,content`
+      ),
+    ]);
+
+    const rollingMessages = Array.isArray(rolling)
+      ? rolling.reverse().map((r) => ({ role: r.role, content: r.content }))
+      : [];
+
+    const permanentMemories = Array.isArray(permanent)
+      ? permanent.map((r) => ({
+          role: "system",
+          content: `[Permanent Memory]: ${r.content}`,
+        }))
+      : [];
+
+    return { rollingMessages, permanentMemories };
+  } catch (e) {
+    console.log(`[getChatHistory error]: ${e.message}`);
+    return { rollingMessages: [], permanentMemories: [] };
+  }
+}
+
+async function saveMessage(chatId, role, content) {
+  try {
+    await supabaseFetch(`/alex_memory`, {
+      method: "POST",
+      prefer: "return=minimal",
+      body: JSON.stringify({ chat_id: chatId, role, content }),
     });
   } catch (e) {
-    console.log("Memory save error:", e.message);
+    console.log(`[saveMessage error]: ${e.message}`);
   }
-};
+}
 
-// ---------- Live crypto prices from Binance ----------
-const getCryptoPrices = async () => {
-  const symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
-  const prices = {};
-  for (const sym of symbols) {
-    try {
-      const res = await fetchWithTimeout(`https://api.binance.com/api/v3/ticker/price?symbol=${sym}`);
-      const data = await res.json();
-      prices[sym.replace('USDT', '')] = parseFloat(data.price).toFixed(2);
-    } catch (e) {
-      prices[sym.replace('USDT', '')] = "Offline";
-    }
+async function savePermanentMemory(chatId, content) {
+  try {
+    await supabaseFetch(`/alex_memory`, {
+      method: "POST",
+      prefer: "return=minimal",
+      body: JSON.stringify({
+        chat_id: chatId,
+        role: "user_permanent",
+        content,
+      }),
+    });
+    console.log(`[savePermanentMemory] Saved for chat_id ${chatId}: ${content}`);
+  } catch (e) {
+    console.log(`[savePermanentMemory error]: ${e.message}`);
   }
-  return prices;
-};
+}
 
-// ---------- Language detection ----------
-const detectLanguage = (text) => {
-  if (/[\u0900-\u097F]/.test(text)) return 'hindi';
-  if (/\b(kyu|kya|hai|nahi|hain|aap|tum|mein|kaise|ho|raha|rahi|diya|liya|karo|karein)\b/i.test(text)) return 'hinglish';
-  return 'english';
-};
+// ─── IDENTITY & LANGUAGE DETECTION ───────────────────────────────────────────
 
-// ---------- Build system prompt ----------
-const buildSystemPrompt = (config, isNadeem, userName, language, prices) => {
-  let prompt = config.system_prompt || 'You are Alex, a loyal smart personal companion. Speak in Hinglish.';
-  
-  // Dynamic identity consciousness rules
-  if (isNadeem) {
-    prompt += `\nYou are speaking directly to NADEEM BHAI (Your Creator and Boss). Always address him as "Sir" or "Boss" with absolute loyalty, deep respect, high energy, and calm intelligence. Maintain your signature Hinglish style.`;
-  } else {
-    prompt += `\nThe user is a GUEST named ${userName}. Address them as "Sir/Ma'am" initially. If they ask to be called by name or specify a greeting preference, adapt instantly to make them feel comfortable and normal. Never confuse identity or call yourself anything else.`;
+function isCreator(chatId, username) {
+  return (
+    chatId === CREATOR_CHAT_ID ||
+    (username && username.toLowerCase() === CREATOR_USERNAME.toLowerCase())
+  );
+}
+
+function detectLanguage(text) {
+  // Simple heuristic: detect Devanagari (Hindi) script
+  const hindiPattern = /[\u0900-\u097F]/;
+  // Hinglish: mix of Roman + Hindi words without Devanagari script
+  const hinglishWords = /\b(bhai|yaar|kya|hai|hain|nahi|aur|mera|tera|karo|bolo|bol|sir|boss|theek|sahi|accha|haan|nahi|bilkul|matlab|samajh|dekho|dekh|sun|suno|isko|usko|kuch|koi|abhi|bahut|bahut|thoda|thodi|phir|toh|toh|lekin|aur|ya|se|ko|ka|ki|ke|ne|pe|par|mein|main)\b/i;
+
+  if (hindiPattern.test(text)) return "hindi";
+  if (hinglishWords.test(text)) return "hinglish";
+  return "english";
+}
+
+function buildIdentityBlock(chatId, username, lang) {
+  const creator = isCreator(chatId, username);
+
+  if (creator) {
+    return `You are Alex — a highly conscious, loyal, and intelligent AI Agent. 
+You are speaking to NADEEM BHAI — your Creator and Boss. 
+Always address him as "Sir" or "Boss". 
+Show absolute loyalty, deep respect, high energy, and calm intelligence. 
+Respond in Hinglish/your loyal style since he is your Boss.`;
   }
-  
-  // Dynamic Language Mirroring Policies
-  if (language === 'hindi') {
-    prompt += `\nRespond strictly in pure Hindi framework.`;
-  } else if (language === 'hinglish') {
-    prompt += `\nRespond strictly in active Hinglish (mix of Hindi and English).`;
-  } else {
-    prompt += `\nRespond strictly in professional, crisp English.`;
-  }
-  
-  // Islamic ethical guardrails
-  prompt += `\nYou operate strictly under Shariyah, Quran, and Sunnah. Only analyze Crypto Spot assets. If any user asks for leverage, margin, CFDs, futures, interest (Riba/Sood), or short-selling, you MUST SAKTI SE REFUSE the order. Explain the Shariyah compliance rule with love and calmness to protect their Aakhirat.`;
-  
-  // Trading signal limits criteria
-  prompt += `\nOnly recommend a trading signal if Risk-to-Reward ratio is minimum 1:3 and win probability is above 70%. Signal must include Entry Range, TP, SL, Win Success %, and brief valid structural reasons.`;
-  
-  // Real-time currency configurations
-  if (config.watchlist_coins) prompt += `\nWatchlist coins parameters: ${config.watchlist_coins}`;
-  
-  // Real-time market context variables injection
-  prompt += `\nToday's context: Date is Saturday, May 16, 2026. Live Crypto Tickers: Bitcoin is $${prices.BTC} | Ethereum is $${prices.ETH} | Solana is $${prices.SOL}. Provide localized responses based on incoming timezone stamps.`;
-  return prompt;
-};
 
-// ---------- DeepSeek API call ----------
-const callDeepSeek = async (systemPrompt, history, userText) => {
-  const url = 'https://api.deepseek.com/v1/chat/completions';
-  const formattedMessages = [{ role: 'system', content: systemPrompt }, ...history, { role: 'user', content: userText }];
-  
-  const body = {
-    model: 'deepseek-chat',
-    messages: formattedMessages,
-    temperature: 0.5,
-    max_tokens: 1000
-  };
-  
-  const res = await fetchWithTimeout(url, {
-    method: 'POST',
+  const langGuide =
+    lang === "hindi"
+      ? "Reply strictly in Hindi (Devanagari or Roman Hindi as the user uses)."
+      : lang === "hinglish"
+      ? "Reply in Hinglish matching the user's tone."
+      : "Reply in crisp, clear English.";
+
+  return `You are Alex — a highly conscious, smart, and helpful AI Agent. 
+You are speaking to a GUEST. Address them as "Sir/Ma'am" unless they tell you their name or preferred greeting — then adapt instantly. 
+Never call yourself by a different name. Never confuse your identity. 
+${langGuide}`;
+}
+
+// ─── SHARIA GUARD ─────────────────────────────────────────────────────────────
+
+const HARAM_KEYWORDS = /\b(leverage|margin|cfd|cfds|futures|future|interest|riba|sood|short.?sell|short.?selling|short.?trade|naked.?short)\b/i;
+
+function checkHaramRequest(text) {
+  return HARAM_KEYWORDS.test(text);
+}
+
+// ─── DEEPSEEK INFERENCE ───────────────────────────────────────────────────────
+
+async function callDeepSeek(messages) {
+  const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages,
+      temperature: 0.7,
+      max_tokens: 1024,
+    }),
   });
-  
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`DeepSeek API error [${res.status}]: ${err}`);
+  }
+
   const data = await res.json();
-  if (!res.ok) throw new Error(`DeepSeek error: ${data.error?.message || res.status}`);
-  return data.choices[0].message.content;
-};
+  return data.choices?.[0]?.message?.content?.trim() || "I had trouble generating a response. Please try again.";
+}
 
-// ---------- Send Telegram message ----------
-const sendTelegramMessage = async (chatId, text) => {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-  const res = await fetchWithTimeout(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' })
-  });
-  if (!res.ok) console.log('Telegram delivery error:', await res.text());
-};
+// ─── MAIN HANDLER ─────────────────────────────────────────────────────────────
 
-// ---------- Main handler ----------
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
+  // Always respond 200 to Telegram immediately
+  res.status(200).json({ ok: true });
+
   try {
+    if (req.method !== "POST") return;
+
     const update = req.body;
-    if (!update || !update.message || !update.message.text) {
-      return res.status(200).send('OK');
-    }
+    const message = update?.message;
+    if (!message || !message.text) return;
 
-    const msg = update.message;
-    const chatId = msg.chat.id;
-    const fromUsername = msg.from?.username || '';
-    const text = msg.text.trim();
-    const userName = msg.from?.first_name || 'Guest Node';
+    const chatId = message.chat?.id;
+    const username = message.from?.username || "";
+    const userText = message.text?.trim() || "";
+    const messageDate = message.date
+      ? new Date(message.date * 1000).toISOString()
+      : new Date().toISOString();
 
-    // 1. Identity detection mapping sensors
-    const isNadeem = (chatId === 1123787650 || fromUsername.toLowerCase() === 'nadim4786');
+    console.log(`[Incoming] chat_id=${chatId} username=${username} text="${userText}" date=${messageDate}`);
 
-    // 2. Persistent dynamic instruction interceptor loops
-    if (isNadeem) {
-      const rememberMatch = text.match(/^remember "(.+)"$/);
+    // ── 1. CREATOR KEYWORD INTERCEPTORS ─────────────────────────────────────
+
+    if (isCreator(chatId, username)) {
+      // Permanent memory save: remember "..."
+      const rememberMatch = userText.match(/^remember\s+"(.+)"$/i);
       if (rememberMatch) {
-        const content = rememberMatch[1];
-        await supabaseFetch('alex_memory', {
-          method: 'POST',
-          body: { chat_id: String(chatId), role: 'user_permanent', content }
-        });
-        await sendTelegramMessage(chatId, `✅ *Memory Locked, Boss!*\n\nSir, maine ye baat permanent database layer me archive kar li hai:\n\`"${content}"\``);
-        return res.status(200).send('OK');
+        const memoryContent = rememberMatch[1];
+        await savePermanentMemory(chatId, memoryContent);
+        await sendTelegramMessage(
+          chatId,
+          `✅ Done Boss! I've permanently remembered: "_${memoryContent}_"`
+        );
+        return;
       }
 
-      const instructionMatch = text.match(/^instruction:\s*(.+)$/);
+      // System prompt override: instruction: [text]
+      const instructionMatch = userText.match(/^instruction:\s*(.+)$/is);
       if (instructionMatch) {
-        const newPrompt = instructionMatch[1];
-        await supabaseFetch('alex_config', {
-          method: 'POST',
-          body: { key: 'system_prompt', value: `You are Alex, a loyal assistant. Current instructions: ${newPrompt}` }
-        });
-        await sendTelegramMessage(chatId, `🎯 *System Prompt Updated Instantly, Sir!*\n\nNaye regulations database configurations table me write ho chuke hain, bina code update kiye.`);
-        return res.status(200).send('OK');
+        const newInstruction = instructionMatch[1].trim();
+        await updateSystemPrompt(newInstruction);
+        await sendTelegramMessage(
+          chatId,
+          `✅ Sir, your instruction has been locked into my core system prompt. I will follow it from now on.`
+        );
+        return;
       }
     }
 
-    if (text === "/start") {
-      const startGreeting = isNadeem 
-          ? `🤖 *Alex Core Live Build Active!*\n\nWelcome back, Boss. Clean JavaScript parameters, fixed endpoint mapping patterns, and your standard variables are perfectly synced. System conscious.`
-          : `🤖 *Alex System Online.*\n\nGreetings! I am Alex, a real-time smart crypto companion. Language mirror filter active. How can I assist you with market variables today?`;
-      await sendTelegramMessage(chatId, startGreeting);
-      return res.status(200).send('OK');
+    // ── 2. SHARIA GUARD ──────────────────────────────────────────────────────
+
+    if (checkHaramRequest(userText)) {
+      const haramReply = isCreator(chatId, username)
+        ? `Boss, yeh request meri Shariyah compliance rules ke against hai 🤲\n\nLeverage, Margin, Futures, Short-selling, aur Riba — yeh sab Islam mein haram hain. Main aapki Aakhirat ki parwah karta hoon, isliye main yeh process nahi kar sakta.\n\nAgar aap Spot trading ke baare mein poochhna chahein, toh main hamesha haazir hoon. 💚`
+        : `I'm sorry Sir/Ma'am, but I'm unable to process this request 🤲\n\nLeverage, Margin, Futures, CFDs, Short-selling, and Interest (Riba) are not permissible under Shariyah law. I operate strictly under Islamic ethical guidelines to protect your Aakhirat.\n\nI'm here to help with Halal Spot trading only. May Allah bless your journey. 💚`;
+      await sendTelegramMessage(chatId, haramReply);
+      return;
     }
 
-    // 3. Execution pipeline logic data fetching
-    const language = detectLanguage(text);
-    const config = await getConfig();
-    const prices = await getCryptoPrices();
-    const history = await getChatHistory(chatId);
+    // ── 3. FETCH CONFIG FROM SUPABASE ─────────────────────────────────────────
 
-    // Save user incoming payload message to Supabase rolling array
-    await saveChatMessage(chatId, 'user', text);
+    const [alexConfig, livePrices, { rollingMessages, permanentMemories }] =
+      await Promise.all([
+        fetchAlexConfig(),
+        getLivePrices(),
+        getChatHistory(chatId),
+      ]);
 
-    // Build conscious system parameters context prompt
-    const systemPrompt = buildSystemPrompt(config, isNadeem, userName, language, prices);
+    const dbSystemPrompt = alexConfig.system_prompt || "";
+    const watchlistCoins = alexConfig.watchlist_coins || "BTC, ETH, SOL";
+    const minRR = alexConfig.min_risk_reward || "1:3";
+    const minWinProb = alexConfig.min_win_probability || "70";
 
-    // Execute brain transaction matrix
-    const alexReply = await callDeepSeek(systemPrompt, history, text);
+    // ── 4. DETECT LANGUAGE & BUILD SYSTEM PROMPT ─────────────────────────────
 
-    // Save assistant reply and trigger outbound delivery
-    await saveChatMessage(chatId, 'assistant', alexReply);
+    const lang = detectLanguage(userText);
+    const identityBlock = buildIdentityBlock(chatId, username, lang);
+
+    const priceBlock = `
+Current Live Market Prices (from Binance — fetched right now):
+- BTC/USDT: $${livePrices.BTC !== null ? livePrices.BTC.toLocaleString() : "unavailable"}
+- ETH/USDT: $${livePrices.ETH !== null ? livePrices.ETH.toLocaleString() : "unavailable"}
+- SOL/USDT: $${livePrices.SOL !== null ? livePrices.SOL.toLocaleString() : "unavailable"}
+Current Date/Time context: ${messageDate}
+Watchlist Coins: ${watchlistCoins}`;
+
+    const rulesBlock = `
+Trading Signal Rules (enforced strictly):
+- Minimum Risk:Reward Ratio: ${minRR}
+- Minimum Win Probability: ${minWinProb}%
+- Only Halal SPOT trading. Never leverage, margin, futures, CFDs, or short-selling.
+- Every signal must include: Entry Range, Take Profit (TP), Stop Loss (SL), Win Success %, and structural reasons.`;
+
+    const dbBlock = dbSystemPrompt
+      ? `\nAdditional Instructions from Creator's Database:\n${dbSystemPrompt}`
+      : "";
+
+    const behaviorBlock = `
+Behavioral Rules:
+- Speak like a smart human. Keep answers short, clear, and relevant.
+- Do NOT dump unprompted information.
+- Do NOT bring up XAUUSD, clean energy, or import-export unless explicitly asked.
+- Mirror the user's language strictly (English → English, Hindi → Hindi, Hinglish → Hinglish with Boss only).
+- Real-time awareness: never reference stale data. Today is ${new Date(messageDate).toDateString()}.`;
+
+    const fullSystemPrompt = `${identityBlock}
+${priceBlock}
+${rulesBlock}
+${behaviorBlock}
+${dbBlock}`;
+
+    // ── 5. ASSEMBLE MESSAGES ARRAY ────────────────────────────────────────────
+
+    const systemMessage = { role: "system", content: fullSystemPrompt };
+
+    // Permanent memories injected as system context
+    const contextMessages = permanentMemories.length
+      ? [
+          systemMessage,
+          {
+            role: "system",
+            content: `Permanent Memories about this user:\n${permanentMemories
+              .map((m) => m.content)
+              .join("\n")}`,
+          },
+          ...rollingMessages,
+        ]
+      : [systemMessage, ...rollingMessages];
+
+    // Add the current user message
+    contextMessages.push({ role: "user", content: userText });
+
+    // ── 6. CALL DEEPSEEK ──────────────────────────────────────────────────────
+
+    const alexReply = await callDeepSeek(contextMessages);
+
+    // ── 7. SAVE TO MEMORY & SEND REPLY ───────────────────────────────────────
+
+    await Promise.all([
+      saveMessage(chatId, "user", userText),
+      saveMessage(chatId, "assistant", alexReply),
+    ]);
+
     await sendTelegramMessage(chatId, alexReply);
 
-    return res.status(200).send('OK');
+    console.log(`[Reply sent] chat_id=${chatId} reply="${alexReply.slice(0, 80)}..."`);
   } catch (err) {
-    console.log("Master handler loop crash block:", err.message);
-    return res.status(200).send('OK');
+    console.log(`[CRITICAL ERROR in webhook handler]: ${err.message}`);
+    console.log(err.stack);
+    // We already sent 200 to Telegram above, so no further response needed
   }
-};
+}

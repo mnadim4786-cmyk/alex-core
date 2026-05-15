@@ -1,7 +1,7 @@
 // api/webhook.js — Ultimate Production-Ready Serverless Webhook Handler for Alex
 // Deployed on Vercel with Supabase + DeepSeek (Pure Strings, No Syntax Failures)
 
-const BOT_TOKEN = "8714536542:AAGePcjJMPJ5YJ0tDMTmBSLxF7jje_r04F8";
+const BOT_TOKEN = "8714536542:AAExOXHa0aPwq7NY2NxZX8-pP_0bhujl4PE";
 // FIX 1: Correct Telegram Bot API base URL format
 const TELEGRAM_API = "https://api.telegram.org/bot" + BOT_TOKEN;
 // FIX 2: Correct DeepSeek chat completions endpoint

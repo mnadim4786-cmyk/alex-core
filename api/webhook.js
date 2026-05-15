@@ -2,13 +2,17 @@
 // Deployed on Vercel with Supabase + DeepSeek (Pure Strings, No Syntax Failures)
 
 const BOT_TOKEN = "8714536542:AAGePcjJMPJ5YJ0tDMTmBSLxF7jje_r04F8";
-const TELEGRAM_API = "https://telegram.org" + BOT_TOKEN;
-const DEEPSEEK_API = "https://deepseek.com";
-const DEEPSEEK_KEY = "sk-044237eb3b72445aa4cbe6a89c898cb6"; 
+// FIX 1: Correct Telegram Bot API base URL format
+const TELEGRAM_API = "https://api.telegram.org/bot" + BOT_TOKEN;
+// FIX 2: Correct DeepSeek chat completions endpoint
+const DEEPSEEK_API = "https://api.deepseek.com/v1/chat/completions";
+const DEEPSEEK_KEY = "sk-044237eb3b72445aa4cbe6a89c898cb6";
 
-const SUPABASE_URL = "https://supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt1dXV5eXFuZGRubmJzd3lkbWpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDAzODIxNjksImV4cCI6MjA1NTk1ODE2OX0.uWpD9jXvS3yC86UeK3W9pX7qV_Lh1v8F9Xw_Y1k2x_g"; 
+// FIX 3: SUPABASE_URL must be your actual project URL, e.g. https://kuuuyyqndnnbswydmjl.supabase.co
+const SUPABASE_URL = "https://kuuuyyqndnnbswydmjl.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt1dXV5eXFuZGRubmJzd3lkbWpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDAzODIxNjksImV4cCI6MjA1NTk1ODE2OX0.uWpD9jXvS3yC86UeK3W9pX7qV_Lh1v8F9Xw_Y1k2x_g";
 
+// ---------- Helper: fetch with timeout ----------
 const fetchWithTimeout = async (url, options = {}, timeout = 15000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
@@ -22,6 +26,7 @@ const fetchWithTimeout = async (url, options = {}, timeout = 15000) => {
   }
 };
 
+// ---------- Supabase REST helpers ----------
 const supabaseFetch = async (table, options = {}) => {
   const { method = 'GET', body, params = '' } = options;
   const url = SUPABASE_URL + '/rest/v1/' + table + params;
@@ -36,6 +41,7 @@ const supabaseFetch = async (table, options = {}) => {
   return res.json();
 };
 
+// ---------- Fetch config from alex_config ----------
 const getConfig = async () => {
   try {
     const rows = await supabaseFetch('alex_config');
@@ -47,6 +53,7 @@ const getConfig = async () => {
   } catch (e) { return {}; }
 };
 
+// ---------- Chat memory management ----------
 const CHAT_HISTORY_LIMIT = 20;
 
 const getChatHistory = async (chatId) => {
@@ -78,19 +85,26 @@ const getUserLocationProfile = async (chatId) => {
 
 const saveUserLocationProfile = async (chatId, profileData) => {
   try {
+    // FIX 4: Use upsert (POST with on-conflict) to avoid duplicate key errors
     await supabaseFetch('alex_config', {
       method: 'POST',
+      params: '?on_conflict=key',
       body: { key: 'loc_' + chatId, value: JSON.stringify(profileData) }
     });
   } catch (e) {}
 };
 
+// ---------- Live crypto prices from Binance ----------
 const getCryptoPrices = async () => {
   const symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
   const prices = {};
   for (const sym of symbols) {
     try {
-      const res = await fetchWithTimeout('https://binance.com' + sym);
+      // FIX 5: Correct Binance ticker price endpoint with query param
+      const res = await fetchWithTimeout(
+        'https://api.binance.com/api/v3/ticker/price?symbol=' + sym
+      );
+      if (!res.ok) throw new Error("Binance HTTP " + res.status);
       const data = await res.json();
       const cleanKey = sym.replace('USDT', '');
       prices[cleanKey] = parseFloat(data.price).toLocaleString('en-US', { minimumFractionDigits: 2 });
@@ -101,12 +115,14 @@ const getCryptoPrices = async () => {
   return prices;
 };
 
+// ---------- Language detection ----------
 const detectLanguage = (text) => {
   if (/[\u0900-\u097F]/.test(text)) return 'hindi';
   if (/\b(kyu|kya|hai|nahi|hain|aap|tum|mein|kaise|ho|raha|rahi|diya|liya|karo|karein)\b/i.test(text)) return 'hinglish';
   return 'english';
 };
 
+// ---------- Reverse Geocoding Map Framework ----------
 function fetchReverseGeocoding(lat, lon) {
     if (lat > 11.5 && lat < 11.6 && lon > 104.9 && lon < 105.0) {
         return { location: "Sangkat Chak Angrae Leu, Phnom Penh, Cambodia", tz: "Asia/Phnom_Penh", curr: "Khmer Riel (KHR) / USD" };
@@ -117,10 +133,16 @@ function fetchReverseGeocoding(lat, lon) {
     return { location: "Coordinates [Lat: " + lat + ", Lon: " + lon + "]", tz: "UTC", curr: "USD (Standard)" };
 }
 
+// ---------- DeepSeek API call ----------
 const callDeepSeek = async (systemPrompt, history, userText) => {
+  // FIX 6: Filter history to only valid roles (user/assistant) — 'user_permanent' would break the API
+  const cleanHistory = history
+    .filter(m => m.role === 'user' || m.role === 'assistant')
+    .map(m => ({ role: m.role, content: m.content }));
+
   const body = {
     model: 'deepseek-chat',
-    messages: [{ role: 'system', content: systemPrompt }, ...history, { role: 'user', content: userText }],
+    messages: [{ role: 'system', content: systemPrompt }, ...cleanHistory, { role: 'user', content: userText }],
     temperature: 0.5,
     max_tokens: 1000
   };
@@ -133,10 +155,11 @@ const callDeepSeek = async (systemPrompt, history, userText) => {
     body: JSON.stringify(body)
   });
   const data = await res.json();
-  if (!res.ok) throw new Error("DeepSeek transaction declined");
+  if (!res.ok) throw new Error("DeepSeek transaction declined: " + JSON.stringify(data));
   return data.choices[0].message.content;
 };
 
+// ---------- Send Telegram message ----------
 const sendTelegramMessage = async (chatId, text, includeLocationButton = false) => {
   const url = TELEGRAM_API + '/sendMessage';
   const body = { chat_id: chatId, text: text, parse_mode: 'Markdown' };
@@ -180,7 +203,7 @@ module.exports = async (req, res) => {
     if (isNadeem) {
       const rememberMatch = text.match(/^remember "(.+)"$/);
       if (rememberMatch) {
-        const content = rememberMatch[1]; // FIX: Array safe selector extraction
+        const content = rememberMatch[1];
         await saveChatMessage(chatId, 'user_permanent', content);
         await sendTelegramMessage(chatId, "✅ *Memory Locked, Boss!*\n\nSir, maine ye baat database layer me permanently archive kar li hai:\n`\"" + content + "\"`");
         return res.status(200).send('OK');
@@ -188,18 +211,20 @@ module.exports = async (req, res) => {
 
       const instructionMatch = text.match(/^instruction:\s*(.+)$/);
       if (instructionMatch) {
-        const newPrompt = instructionMatch[1]; // FIX: Array safe selector extraction
+        const newPrompt = instructionMatch[1];
+        // FIX 7: Use upsert for system_prompt to avoid duplicate key error
         await supabaseFetch('alex_config', {
           method: 'POST',
+          params: '?on_conflict=key',
           body: { key: 'system_prompt', value: "You are Alex, a loyal AI assistant. Current regulations: " + newPrompt }
         });
-        await sendTelegramMessage(chatId, `🎯 *System Rules Updated Instantly, Sir!*\n\nNaye instructions config table me write ho chuke hain.`);
+        await sendTelegramMessage(chatId, "🎯 *System Rules Updated Instantly, Sir!*\n\nNaye instructions config table me write ho chuke hain.");
         return res.status(200).send('OK');
       }
     }
 
     if (text === "/start") {
-      const startGreeting = isNadeem 
+      const startGreeting = isNadeem
           ? "🤖 *Alex Core Static Build Active!*\n\nWelcome back, Boss. Satellite GPS mapping, Binance real-time tickers, and live Supabase config rules are online. Mobile hardware GPS sync karne ke liye niche diye gaye *Share Live Location* button par click kijiye, Sir."
           : "🤖 *Alex System Online.*\n\nGreetings! I am Alex, a real-time smart crypto companion. Language mirror filter active. How can I assist you with market variables today?";
       await sendTelegramMessage(chatId, startGreeting, isNadeem);

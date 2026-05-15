@@ -9,7 +9,6 @@ const DEEPSEEK_KEY = "sk-044237eb3b72445aa4cbe6a89c898cb6";
 const SUPABASE_URL = "https://supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt1dXV5eXFuZGRubmJzd3lkbWpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDAzODIxNjksImV4cCI6MjA1NTk1ODE2OX0.uWpD9jXvS3yC86UeK3W9pX7qV_Lh1v8F9Xw_Y1k2x_g"; 
 
-// ---------- Helper: fetch with timeout ----------
 const fetchWithTimeout = async (url, options = {}, timeout = 15000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
@@ -23,7 +22,6 @@ const fetchWithTimeout = async (url, options = {}, timeout = 15000) => {
   }
 };
 
-// ---------- Supabase REST helpers ----------
 const supabaseFetch = async (table, options = {}) => {
   const { method = 'GET', body, params = '' } = options;
   const url = SUPABASE_URL + '/rest/v1/' + table + params;
@@ -38,7 +36,6 @@ const supabaseFetch = async (table, options = {}) => {
   return res.json();
 };
 
-// ---------- Fetch config from alex_config ----------
 const getConfig = async () => {
   try {
     const rows = await supabaseFetch('alex_config');
@@ -50,7 +47,6 @@ const getConfig = async () => {
   } catch (e) { return {}; }
 };
 
-// ---------- Chat memory management ----------
 const CHAT_HISTORY_LIMIT = 20;
 
 const getChatHistory = async (chatId) => {
@@ -89,7 +85,6 @@ const saveUserLocationProfile = async (chatId, profileData) => {
   } catch (e) {}
 };
 
-// ---------- Live crypto prices from Binance ----------
 const getCryptoPrices = async () => {
   const symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
   const prices = {};
@@ -106,14 +101,12 @@ const getCryptoPrices = async () => {
   return prices;
 };
 
-// ---------- Language detection ----------
 const detectLanguage = (text) => {
   if (/[\u0900-\u097F]/.test(text)) return 'hindi';
   if (/\b(kyu|kya|hai|nahi|hain|aap|tum|mein|kaise|ho|raha|rahi|diya|liya|karo|karein)\b/i.test(text)) return 'hinglish';
   return 'english';
 };
 
-// ---------- Reverse Geocoding Map Framework ----------
 function fetchReverseGeocoding(lat, lon) {
     if (lat > 11.5 && lat < 11.6 && lon > 104.9 && lon < 105.0) {
         return { location: "Sangkat Chak Angrae Leu, Phnom Penh, Cambodia", tz: "Asia/Phnom_Penh", curr: "Khmer Riel (KHR) / USD" };
@@ -124,7 +117,6 @@ function fetchReverseGeocoding(lat, lon) {
     return { location: "Coordinates [Lat: " + lat + ", Lon: " + lon + "]", tz: "UTC", curr: "USD (Standard)" };
 }
 
-// ---------- DeepSeek API call ----------
 const callDeepSeek = async (systemPrompt, history, userText) => {
   const body = {
     model: 'deepseek-chat',
@@ -145,7 +137,6 @@ const callDeepSeek = async (systemPrompt, history, userText) => {
   return data.choices[0].message.content;
 };
 
-// ---------- Send Telegram message ----------
 const sendTelegramMessage = async (chatId, text, includeLocationButton = false) => {
   const url = TELEGRAM_API + '/sendMessage';
   const body = { chat_id: chatId, text: text, parse_mode: 'Markdown' };
@@ -189,7 +180,7 @@ module.exports = async (req, res) => {
     if (isNadeem) {
       const rememberMatch = text.match(/^remember "(.+)"$/);
       if (rememberMatch) {
-        const content = rememberMatch[1]; // FIXED: Array index extraction applied safely
+        const content = rememberMatch[1]; // FIX: Array safe selector extraction
         await saveChatMessage(chatId, 'user_permanent', content);
         await sendTelegramMessage(chatId, "✅ *Memory Locked, Boss!*\n\nSir, maine ye baat database layer me permanently archive kar li hai:\n`\"" + content + "\"`");
         return res.status(200).send('OK');
@@ -197,7 +188,7 @@ module.exports = async (req, res) => {
 
       const instructionMatch = text.match(/^instruction:\s*(.+)$/);
       if (instructionMatch) {
-        const newPrompt = instructionMatch[1]; // FIXED: Array index extraction applied safely
+        const newPrompt = instructionMatch[1]; // FIX: Array safe selector extraction
         await supabaseFetch('alex_config', {
           method: 'POST',
           body: { key: 'system_prompt', value: "You are Alex, a loyal AI assistant. Current regulations: " + newPrompt }

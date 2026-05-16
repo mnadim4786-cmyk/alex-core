@@ -460,6 +460,13 @@ const buildSystemPrompt = (config, prices, localTimeFrame, userName, isNadeem, p
   prompt += "\nFor TP hit: Be celebratory with Alhamdulillah energy.";
   prompt += "\nFor SL hit: Be calm, emotionally supportive, give deeni comfort.";
 
+  prompt += "\n\n=== CONVERSATION CONTEXT RULES (CRITICAL) ===";
+  prompt += "\nAlways read full conversation history before replying.";
+  prompt += "\nShort replies like Haa, Han, Ok, Theek hai, Yes = CONTINUATION of previous topic. Never treat as new conversation.";
+  prompt += "\nIf Boss says Haa or Han after your question — it means YES. Respond accordingly and continue that topic naturally.";
+  prompt += "\nNever start a new question when Boss just answered your previous one.";
+  prompt += "\nBe like JARVIS — remember context, feel like a real companion not a chatbot. Short, warm, to the point.";
+
   if (permanentMemories && permanentMemories.length > 0) {
     prompt += "\n\n=== BOSS KI PERMANENT MEMORIES ===";
     permanentMemories.forEach((m, i) => { prompt += "\n" + (i + 1) + ". " + m; });

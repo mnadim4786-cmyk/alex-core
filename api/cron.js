@@ -1,4 +1,4 @@
-// api/cron.js — ALEX CORE v1.0 — Proactive Alert Engine
+// api/cron.js — ALEX CORE v1.0 — Proactive Alert Engine v2
 // Runs every minute via Vercel Cron
 // Handles: Namaz alerts, Morning briefing, 4-hour dashboard, Trade TP/SL, Be Ready signals, News
  

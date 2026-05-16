@@ -6,7 +6,7 @@ const BOT_TOKEN = "8714536542:AAExOXHa0aPwq7NY2NxZX8-pP_0bhujl4PE";
 const TELEGRAM_API = "https://api.telegram.org/bot" + BOT_TOKEN;
 // FIX 2: Correct DeepSeek chat completions endpoint
 const DEEPSEEK_API = "https://api.deepseek.com/v1/chat/completions";
-const DEEPSEEK_KEY = "sk-044237eb3b72445aa4cbe6a89c898cb6";
+const DEEPSEEK_KEY = "sk-02dbbcb5e09949a284c99a5672b74c10";
 
 // FIX 3: SUPABASE_URL must be your actual project URL, e.g. https://kuuuyyqndnnbswydmjl.supabase.co
 const SUPABASE_URL = "https://kuuuyyqndnnbswydmjl.supabase.co";

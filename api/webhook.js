@@ -479,12 +479,9 @@ const buildSystemPrompt = (config, prices, localTimeFrame, userName, isNadeem, p
 // MAIN HANDLER
 // ============================================================
 module.exports = async (req, res) => {
-  // Always respond 200 immediately to Telegram
-  res.status(200).send('OK');
-
   try {
     const update = req.body;
-    if (!update || !update.message) return;
+    if (!update || !update.message) return res.status(200).send('OK');
 
     const msg = update.message;
     const chatId = msg.chat.id;
@@ -544,11 +541,11 @@ module.exports = async (req, res) => {
         "🔹 *Currency:* `" + geo.curr + "`\n\n" +
         "Ab se aapka data isi location matrix par chalega automatically!"
       );
-      return;
+      return res.status(200).send('OK');
     }
 
     const text = msg.text ? msg.text.trim() : '';
-    if (!text) return;
+    if (!text) return res.status(200).send('OK');
 
     // ── Nadeem-only commands ──────────────────────────────────────────
 
@@ -561,7 +558,7 @@ module.exports = async (req, res) => {
         await sendTelegramMessage(chatId,
           "✅ *Memory Locked, Boss!*\n\n`\"" + content + "\"`\n\nDatabase me permanently save ho gaya, Sir."
         );
-        return;
+        return res.status(200).send('OK');
       }
 
       // instruction: ... — system prompt update (Section 1.2)
@@ -575,14 +572,14 @@ module.exports = async (req, res) => {
         await sendTelegramMessage(chatId,
           "🎯 *System Rules Updated, Sir!*\n\nNaye instructions active ho gaye hain:\n`" + newInstruction + "`"
         );
-        return;
+        return res.status(200).send('OK');
       }
 
       // /dashboard — manual 4-hour dashboard trigger (Section 4.2)
       if (text === '/dashboard') {
         const dashPrices = await getCryptoPrices();
         await sendTelegramMessage(chatId, buildMarketDashboard(dashPrices));
-        return;
+        return res.status(200).send('OK');
       }
 
       // /trades — view active virtual trades (Section 3.2)
@@ -605,7 +602,7 @@ module.exports = async (req, res) => {
         } catch (e) {
           await sendTelegramMessage(chatId, "⚠️ Trades fetch karne mein error aaya, Boss.");
         }
-        return;
+        return res.status(200).send('OK');
       }
     }
 
@@ -629,7 +626,7 @@ module.exports = async (req, res) => {
           "GPS sync ke liye neeche *Share Live Location* dabayein, Sir. 📍"
         : "🤖 *Alex System Online.*\n\nGreetings! I am Alex, your intelligent crypto companion.\nHow can I assist you today?";
       await sendTelegramMessage(chatId, greeting, isNadeem);
-      return;
+      return res.status(200).send('OK');
     }
 
     // ── Main conversation flow ────────────────────────────────────────
@@ -714,8 +711,9 @@ module.exports = async (req, res) => {
     await saveMemory(chatId, 'assistant', alexReply);
     await sendTelegramMessage(chatId, alexReply);
 
+    return res.status(200).send('OK');
   } catch (err) {
     console.log("Alex crash block:", err.message);
-    // Don't re-send 200, already sent above
+    return res.status(200).send('OK');
   }
 };

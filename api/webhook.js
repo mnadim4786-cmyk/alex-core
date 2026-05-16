@@ -1,19 +1,16 @@
 // api/webhook.js — Ultimate Production-Ready Serverless Webhook Handler for Alex
-// Deployed on Vercel with Supabase + DeepSeek (Pure Strings, No Syntax Failures)
 
-const BOT_TOKEN = "8714536542:AAExOXHa0aPwq7NY2NxZX8-pP_0bhujl4PE";
-// FIX 1: Correct Telegram Bot API base URL format
+// All secrets from Vercel Environment Variables (never hardcode)
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
+
 const TELEGRAM_API = "https://api.telegram.org/bot" + BOT_TOKEN;
-// FIX 2: Correct DeepSeek chat completions endpoint
 const DEEPSEEK_API = "https://api.deepseek.com/v1/chat/completions";
-const DEEPSEEK_KEY = "sk-02dbbcb5e09949a284c99a5672b74c10";
-
-// FIX 3: SUPABASE_URL must be your actual project URL, e.g. https://kuuuyyqndnnbswydmjl.supabase.co
-const SUPABASE_URL = "https://kuuuyyqndnnbswydmjl.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt1dXV5eXFuZGRubmJzd3lkbWpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDAzODIxNjksImV4cCI6MjA1NTk1ODE2OX0.uWpD9jXvS3yC86UeK3W9pX7qV_Lh1v8F9Xw_Y1k2x_g";
 
 // ---------- Helper: fetch with timeout ----------
-const fetchWithTimeout = async (url, options = {}, timeout = 15000) => {
+const fetchWithTimeout = async (url, options = {}, timeout = 25000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -36,8 +33,12 @@ const supabaseFetch = async (table, options = {}) => {
     'Content-Type': 'application/json',
     'Prefer': 'return=representation'
   };
-  const res = await fetchWithTimeout(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  if (!res.ok) throw new Error("Supabase structural error status: " + res.status);
+  const res = await fetchWithTimeout(url, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!res.ok) throw new Error("Supabase error status: " + res.status);
   return res.json();
 };
 
@@ -85,7 +86,6 @@ const getUserLocationProfile = async (chatId) => {
 
 const saveUserLocationProfile = async (chatId, profileData) => {
   try {
-    // FIX 4: Use upsert (POST with on-conflict) to avoid duplicate key errors
     await supabaseFetch('alex_config', {
       method: 'POST',
       params: '?on_conflict=key',
@@ -94,25 +94,22 @@ const saveUserLocationProfile = async (chatId, profileData) => {
   } catch (e) {}
 };
 
-// ---------- Live crypto prices from Binance ----------
+// ---------- Live crypto prices from CoinGecko (no regional blocks) ----------
 const getCryptoPrices = async () => {
-  const symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
-  const prices = {};
-  for (const sym of symbols) {
-    try {
-      // FIX 5: Correct Binance ticker price endpoint with query param
-      const res = await fetchWithTimeout(
-        'https://api.binance.com/api/v3/ticker/price?symbol=' + sym
-      );
-      if (!res.ok) throw new Error("Binance HTTP " + res.status);
-      const data = await res.json();
-      const cleanKey = sym.replace('USDT', '');
-      prices[cleanKey] = parseFloat(data.price).toLocaleString('en-US', { minimumFractionDigits: 2 });
-    } catch (e) {
-      prices[sym.replace('USDT', '')] = "Offline";
-    }
+  try {
+    const res = await fetchWithTimeout(
+      'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd'
+    );
+    if (!res.ok) throw new Error("CoinGecko HTTP " + res.status);
+    const data = await res.json();
+    return {
+      BTC: data.bitcoin.usd.toLocaleString('en-US', { minimumFractionDigits: 2 }),
+      ETH: data.ethereum.usd.toLocaleString('en-US', { minimumFractionDigits: 2 }),
+      SOL: data.solana.usd.toLocaleString('en-US', { minimumFractionDigits: 2 })
+    };
+  } catch (e) {
+    return { BTC: "Offline", ETH: "Offline", SOL: "Offline" };
   }
-  return prices;
 };
 
 // ---------- Language detection ----------
@@ -124,28 +121,33 @@ const detectLanguage = (text) => {
 
 // ---------- Reverse Geocoding Map Framework ----------
 function fetchReverseGeocoding(lat, lon) {
-    if (lat > 11.5 && lat < 11.6 && lon > 104.9 && lon < 105.0) {
-        return { location: "Sangkat Chak Angrae Leu, Phnom Penh, Cambodia", tz: "Asia/Phnom_Penh", curr: "Khmer Riel (KHR) / USD" };
-    }
-    if (lat > 8.0 && lat < 37.0 && lon > 68.0 && lon < 97.0) {
-        return { location: "India/South Asia Region", tz: "Asia/Kolkata", curr: "Indian Rupee (INR)" };
-    }
-    return { location: "Coordinates [Lat: " + lat + ", Lon: " + lon + "]", tz: "UTC", curr: "USD (Standard)" };
+  if (lat > 11.5 && lat < 11.6 && lon > 104.9 && lon < 105.0) {
+    return { location: "Sangkat Chak Angrae Leu, Phnom Penh, Cambodia", tz: "Asia/Phnom_Penh", curr: "Khmer Riel (KHR) / USD" };
+  }
+  if (lat > 8.0 && lat < 37.0 && lon > 68.0 && lon < 97.0) {
+    return { location: "India/South Asia Region", tz: "Asia/Kolkata", curr: "Indian Rupee (INR)" };
+  }
+  return { location: "Coordinates [Lat: " + lat + ", Lon: " + lon + "]", tz: "UTC", curr: "USD (Standard)" };
 }
 
 // ---------- DeepSeek API call ----------
 const callDeepSeek = async (systemPrompt, history, userText) => {
-  // FIX 6: Filter history to only valid roles (user/assistant) — 'user_permanent' would break the API
+  // Only valid roles for DeepSeek: user / assistant
   const cleanHistory = history
     .filter(m => m.role === 'user' || m.role === 'assistant')
     .map(m => ({ role: m.role, content: m.content }));
 
   const body = {
     model: 'deepseek-chat',
-    messages: [{ role: 'system', content: systemPrompt }, ...cleanHistory, { role: 'user', content: userText }],
+    messages: [
+      { role: 'system', content: systemPrompt },
+      ...cleanHistory,
+      { role: 'user', content: userText }
+    ],
     temperature: 0.5,
     max_tokens: 1000
   };
+
   const res = await fetchWithTimeout(DEEPSEEK_API, {
     method: 'POST',
     headers: {
@@ -154,6 +156,7 @@ const callDeepSeek = async (systemPrompt, history, userText) => {
     },
     body: JSON.stringify(body)
   });
+
   const data = await res.json();
   if (!res.ok) throw new Error("DeepSeek transaction declined: " + JSON.stringify(data));
   return data.choices[0].message.content;
@@ -164,10 +167,11 @@ const sendTelegramMessage = async (chatId, text, includeLocationButton = false) 
   const url = TELEGRAM_API + '/sendMessage';
   const body = { chat_id: chatId, text: text, parse_mode: 'Markdown' };
   if (includeLocationButton) {
-      body.reply_markup = {
-          keyboard: [[{ text: "📍 Share Live Location", request_location: true }]],
-          resize_keyboard: true, one_time_keyboard: true
-      };
+    body.reply_markup = {
+      keyboard: [[{ text: "📍 Share Live Location", request_location: true }]],
+      resize_keyboard: true,
+      one_time_keyboard: true
+    };
   }
   await fetchWithTimeout(url, {
     method: 'POST',
@@ -189,12 +193,14 @@ module.exports = async (req, res) => {
 
     const isNadeem = (chatId === 1123787650 || fromUsername.toLowerCase() === 'nadim4786');
 
-    // Handle Incoming Location GPS tracking
+    // Handle incoming GPS location
     if (msg.location) {
-        const geoProfile = fetchReverseGeocoding(msg.location.latitude, msg.location.longitude);
-        await saveUserLocationProfile(chatId, geoProfile);
-        await sendTelegramMessage(chatId, "🎯 *Map GPS Synchronized, Sir!*\n\nAlex tracking system has saved your profile:\n🔹 *Zone:* `" + geoProfile.location + "`\n🔹 *Timezone:* `" + geoProfile.tz + "`\n\nAb se aapka data isi location matrix par automatic chalega!");
-        return res.status(200).send('OK');
+      const geoProfile = fetchReverseGeocoding(msg.location.latitude, msg.location.longitude);
+      await saveUserLocationProfile(chatId, geoProfile);
+      await sendTelegramMessage(chatId,
+        "🎯 *Map GPS Synchronized, Sir!*\n\nAlex tracking system has saved your profile:\n🔹 *Zone:* `" + geoProfile.location + "`\n🔹 *Timezone:* `" + geoProfile.tz + "`\n\nAb se aapka data isi location matrix par automatic chalega!"
+      );
+      return res.status(200).send('OK');
     }
 
     const text = msg.text ? msg.text.trim() : '';
@@ -205,28 +211,31 @@ module.exports = async (req, res) => {
       if (rememberMatch) {
         const content = rememberMatch[1];
         await saveChatMessage(chatId, 'user_permanent', content);
-        await sendTelegramMessage(chatId, "✅ *Memory Locked, Boss!*\n\nSir, maine ye baat database layer me permanently archive kar li hai:\n`\"" + content + "\"`");
+        await sendTelegramMessage(chatId,
+          "✅ *Memory Locked, Boss!*\n\nSir, maine ye baat database layer me permanently archive kar li hai:\n`\"" + content + "\"`"
+        );
         return res.status(200).send('OK');
       }
 
       const instructionMatch = text.match(/^instruction:\s*(.+)$/);
       if (instructionMatch) {
         const newPrompt = instructionMatch[1];
-        // FIX 7: Use upsert for system_prompt to avoid duplicate key error
         await supabaseFetch('alex_config', {
           method: 'POST',
           params: '?on_conflict=key',
           body: { key: 'system_prompt', value: "You are Alex, a loyal AI assistant. Current regulations: " + newPrompt }
         });
-        await sendTelegramMessage(chatId, "🎯 *System Rules Updated Instantly, Sir!*\n\nNaye instructions config table me write ho chuke hain.");
+        await sendTelegramMessage(chatId,
+          "🎯 *System Rules Updated Instantly, Sir!*\n\nNaye instructions config table me write ho chuke hain."
+        );
         return res.status(200).send('OK');
       }
     }
 
     if (text === "/start") {
       const startGreeting = isNadeem
-          ? "🤖 *Alex Core Static Build Active!*\n\nWelcome back, Boss. Satellite GPS mapping, Binance real-time tickers, and live Supabase config rules are online. Mobile hardware GPS sync karne ke liye niche diye gaye *Share Live Location* button par click kijiye, Sir."
-          : "🤖 *Alex System Online.*\n\nGreetings! I am Alex, a real-time smart crypto companion. Language mirror filter active. How can I assist you with market variables today?";
+        ? "🤖 *Alex Core Static Build Active!*\n\nWelcome back, Boss. Satellite GPS mapping, CoinGecko real-time tickers, and live Supabase config rules are online. Mobile hardware GPS sync karne ke liye niche diye gaye *Share Live Location* button par click kijiye, Sir."
+        : "🤖 *Alex System Online.*\n\nGreetings! I am Alex, a real-time smart crypto companion. Language mirror filter active. How can I assist you with market variables today?";
       await sendTelegramMessage(chatId, startGreeting, isNadeem);
       return res.status(200).send('OK');
     }
@@ -242,25 +251,25 @@ module.exports = async (req, res) => {
     let activeCurr = "US Dollar (USD)";
 
     if (savedProfile) {
-        activeTz = savedProfile.tz;
-        activeLoc = savedProfile.location;
-        activeCurr = savedProfile.curr;
+      activeTz = savedProfile.tz;
+      activeLoc = savedProfile.location;
+      activeCurr = savedProfile.curr;
     } else if (isNadeem) {
-        activeTz = 'Asia/Phnom_Penh';
-        activeLoc = "Sangkat Chak Angrae Leu, Phnom Penh, Cambodia";
-        activeCurr = "Khmer Riel (KHR) aur US Dollar (USD)";
+      activeTz = 'Asia/Phnom_Penh';
+      activeLoc = "Sangkat Chak Angrae Leu, Phnom Penh, Cambodia";
+      activeCurr = "Khmer Riel (KHR) aur US Dollar (USD)";
     } else if (language === 'hindi' || language === 'hinglish') {
-        activeTz = 'Asia/Kolkata';
-        activeLoc = "India/South Asia Region";
-        activeCurr = "Indian Rupee (INR)";
+      activeTz = 'Asia/Kolkata';
+      activeLoc = "India/South Asia Region";
+      activeCurr = "Indian Rupee (INR)";
     }
 
     const dateObj = new Date(msg.date * 1000);
     const localTimeFrame = {
-        date: dateObj.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: activeTz }),
-        time: dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: activeTz }),
-        location: activeLoc,
-        currency: activeCurr
+      date: dateObj.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: activeTz }),
+      time: dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: activeTz }),
+      location: activeLoc,
+      currency: activeCurr
     };
 
     await saveChatMessage(chatId, 'user', text);
